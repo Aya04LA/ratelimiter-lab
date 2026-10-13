@@ -1,6 +1,6 @@
 # Rate Limiter Lab
 
-![CI](https://github.com/YOUR_USERNAME/ratelimiter-lab/actions/workflows/ci.yml/badge.svg)
+![CI](https://github.com/Aya04LA/ratelimiter-lab/actions/workflows/ci.yml/badge.svg)
 
 **Live demo → https://YOUR-APP.onrender.com**
 
