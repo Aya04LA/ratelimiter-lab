@@ -3,6 +3,12 @@ name = "ratelimiter-lab"
 version = "1.0.0"
 description = "Four rate-limiting algorithms backed by atomic Redis Lua scripts, with a live visual demo."
 requires-python = ">=3.11"
+# Kept in sync with requirements.txt (Docker and CI install from that file).
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "redis>=5.0",
+]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

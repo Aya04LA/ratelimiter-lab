@@ -2,7 +2,7 @@
 
 ![CI](https://github.com/Aya04LA/ratelimiter-lab/actions/workflows/ci.yml/badge.svg)
 
-**Live demo → https://YOUR-APP.onrender.com**
+**Live demo → https://ratelimiter-lab.vercel.app**
 
 A distributed rate limiter implementing the four classic algorithms on top of Redis, with a live page that fires identical traffic at all four side by side so you can watch where they disagree.
 
@@ -119,7 +119,9 @@ pytest                                      # memory + fakeredis
 REDIS_TEST_URL=redis://localhost:6379 pytest  # against a real Redis
 ```
 
-**Deploy (free):** push to GitHub, then on Render choose **New → Blueprint** and select the repo. `render.yaml` provisions the web service and a Redis-compatible Key Value store. The free tier sleeps after 15 minutes idle, so the first visit takes about 30s to wake up.
+**Deploy (free, no card):** import the repo on [Vercel](https://vercel.com/new), then add **Upstash for Redis** from the project's *Storage* tab. That sets `REDIS_URL`/`KV_URL` automatically, and every push to `main` redeploys. `api/index.py` exposes the FastAPI app as a serverless function. Because each request may hit a fresh function instance, Redis is required there: the in-memory backend would give every instance its own counters. Upstash's free tier has a monthly command quota, so run the k6 test against the Docker stack, not the live demo.
+
+**Alternatives:** `render.yaml` is a Render Blueprint (web service + Key Value). The Dockerfile runs anywhere that runs containers.
 
 ## API
 

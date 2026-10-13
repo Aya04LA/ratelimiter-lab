@@ -18,7 +18,8 @@ class Settings:
     @classmethod
     def from_env(cls) -> "Settings":
         return cls(
-            redis_url=os.environ.get("REDIS_URL") or None,
+            # KV_URL is the name Upstash's Vercel integration may use instead.
+            redis_url=os.environ.get("REDIS_URL") or os.environ.get("KV_URL") or None,
             default_limit=int(os.environ.get("DEFAULT_LIMIT", "10")),
             default_window=float(os.environ.get("DEFAULT_WINDOW", "10")),
             fail_open=_bool(os.environ.get("FAIL_OPEN", "true")),
