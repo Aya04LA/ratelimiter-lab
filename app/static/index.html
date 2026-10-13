@@ -1,0 +1,553 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Rate Limiter Lab</title>
+<meta name="description" content="Four rate-limiting algorithms, one Redis, side by side. Send traffic and watch each one decide.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%230071e3'/><path d='M7 22h4V12H7zm7 0h4V8h-4zm7 0h4v-6h-4z' fill='white'/></svg>">
+<style>
+  /* ---------- Tokens ---------- */
+  :root {
+    --bg: #f5f5f7; --surface: #ffffff; --fill: rgba(118, 118, 128, 0.12); --fill-strong: rgba(118, 118, 128, 0.2);
+    --text: #1d1d1f; --muted: #6e6e73; --hair: rgba(0, 0, 0, 0.08); --grid: rgba(0, 0, 0, 0.06);
+    --accent: #0071e3; --btn: #0071e3; --btn-text: #ffffff;
+    --ok: #248a3d; --bad: #d70015; --warn: #b25000; --bad-tint: rgba(215, 0, 21, 0.08);
+    --material: rgba(255, 255, 255, 0.72); --material-edge: rgba(255, 255, 255, 0.6);
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.04);
+    --shadow-md: 0 1px 2px rgba(0, 0, 0, 0.04), 0 6px 20px rgba(0, 0, 0, 0.05);
+    --shadow-lift: 0 1px 2px rgba(0, 0, 0, 0.06), 0 12px 32px rgba(0, 0, 0, 0.12);
+    --mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #000000; --surface: #1c1c1e; --fill: rgba(118, 118, 128, 0.24); --fill-strong: rgba(118, 118, 128, 0.36);
+      --text: #f5f5f7; --muted: #98989d; --hair: rgba(255, 255, 255, 0.1); --grid: rgba(255, 255, 255, 0.07);
+      --accent: #2997ff; --btn: #0071e3; --btn-text: #ffffff;
+      --ok: #30d158; --bad: #ff453a; --warn: #ffa60a; --bad-tint: rgba(255, 69, 58, 0.14);
+      --material: rgba(30, 30, 32, 0.72); --material-edge: rgba(255, 255, 255, 0.08);
+      --shadow-sm: none; --shadow-md: 0 0 0 1px var(--hair); --shadow-lift: 0 0 0 1px var(--hair), 0 12px 32px rgba(0, 0, 0, 0.5);
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #000000; --surface: #1c1c1e; --fill: rgba(118, 118, 128, 0.24); --fill-strong: rgba(118, 118, 128, 0.36);
+    --text: #f5f5f7; --muted: #98989d; --hair: rgba(255, 255, 255, 0.1); --grid: rgba(255, 255, 255, 0.07);
+    --accent: #2997ff; --btn: #0071e3; --btn-text: #ffffff;
+    --ok: #30d158; --bad: #ff453a; --warn: #ffa60a; --bad-tint: rgba(255, 69, 58, 0.14);
+    --material: rgba(30, 30, 32, 0.72); --material-edge: rgba(255, 255, 255, 0.08);
+    --shadow-sm: none; --shadow-md: 0 0 0 1px var(--hair); --shadow-lift: 0 0 0 1px var(--hair), 0 12px 32px rgba(0, 0, 0, 0.5);
+    color-scheme: dark;
+  }
+
+  /* ---------- Base & type ---------- */
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 100%/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    transition: background-color 300ms ease, color 300ms ease; /* ease theme switches, no brightness jump */
+  }
+  main { max-width: 70rem; margin: 0 auto; padding: 3.5rem 1rem 4rem; }
+  /* Tracking and leading change with size: tight for display, neutral for body, open for tiny caps. */
+  h1 { font-size: clamp(2.125rem, 5vw, 3.25rem); line-height: 1.05; letter-spacing: -0.028em; font-weight: 700; margin: 0 0 0.75rem; font-optical-sizing: auto; }
+  h2 { font-size: 1.375rem; line-height: 1.2; letter-spacing: -0.016em; font-weight: 650; margin: 0 0 0.75rem; }
+  h3 { font-size: 1.0625rem; line-height: 1.3; letter-spacing: -0.008em; font-weight: 600; margin: 0; }
+  p { margin: 0 0 0.75rem; }
+  .lede { color: var(--muted); max-width: 40rem; font-size: 1.1875rem; line-height: 1.45; letter-spacing: -0.006em; }
+  .small { font-size: 0.8125rem; line-height: 1.45; letter-spacing: 0.002em; color: var(--muted); }
+  code, pre { font-family: var(--mono); }
+  code { font-size: 0.88em; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .vh { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+  /* ---------- Status chips ---------- */
+  .chips { display: flex; flex-wrap: wrap; gap: 0.5rem; margin: 1.5rem 0 2rem; }
+  .chip {
+    display: inline-flex; align-items: center; gap: 0.4rem; padding: 0.3rem 0.75rem; border-radius: 999px;
+    background: var(--fill); font-size: 0.8125rem; letter-spacing: 0.002em; color: var(--muted);
+  }
+  .chip b { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+  .dot { width: 0.5rem; height: 0.5rem; border-radius: 50%; background: var(--muted); }
+  .dot.ok { background: var(--ok); } .dot.bad { background: var(--bad); }
+
+  /* ---------- Surfaces ---------- */
+  .card { background: var(--surface); border-radius: 1.25rem; padding: 1.25rem; box-shadow: var(--shadow-md); }
+
+  /* Floating translucent toolbar: content scrolls underneath it. */
+  .sentinel { height: 1px; margin-bottom: -1px; }
+  .toolbar {
+    position: sticky; top: 0.75rem; z-index: 10;
+    display: flex; flex-wrap: wrap; align-items: center; gap: 0.625rem;
+    padding: 0.625rem; border-radius: 1.375rem;
+    background: var(--material);
+    -webkit-backdrop-filter: blur(20px) saturate(180%); backdrop-filter: blur(20px) saturate(180%);
+    box-shadow: inset 0 1px 0 var(--material-edge), var(--shadow-md);
+    transition: box-shadow 250ms ease;
+  }
+  /* Scroll edge effect: lift the bar only once it actually floats over content. */
+  .toolbar.stuck { box-shadow: inset 0 1px 0 var(--material-edge), var(--shadow-lift); }
+  .toolbar .group { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; }
+  .toolbar .label { font-size: 0.8125rem; font-weight: 500; color: var(--muted); letter-spacing: 0.002em; margin: 0 0.125rem 0 0.375rem; }
+
+  /* ---------- Buttons: feedback on press, instantly ---------- */
+  button {
+    font: inherit; font-size: 0.9375rem; font-weight: 500; letter-spacing: -0.004em;
+    border: 0; border-radius: 999px; padding: 0.5rem 1rem; min-height: 2.25rem;
+    background: var(--fill); color: var(--text); cursor: pointer;
+    touch-action: manipulation; -webkit-tap-highlight-color: transparent; user-select: none;
+    transition: transform 160ms ease-out, background-color 160ms ease-out, opacity 160ms ease-out;
+  }
+  @media (hover: hover) { button:hover { background: var(--fill-strong); } }
+  button:active { transform: scale(0.96); transition-duration: 80ms; }
+  button:focus-visible { outline: 3px solid color-mix(in srgb, var(--accent) 55%, transparent); outline-offset: 2px; }
+  button.primary { background: var(--btn); color: var(--btn-text); font-weight: 600; }
+  @media (hover: hover) { button.primary:hover { background: color-mix(in srgb, var(--btn) 88%, black); } }
+  button:disabled { opacity: 0.45; cursor: default; transform: none; }
+
+  /* Segmented control with a spring-driven thumb */
+  .seg { position: relative; display: inline-flex; padding: 2px; border-radius: 999px; background: var(--fill); }
+  .seg .thumb {
+    position: absolute; top: 2px; bottom: 2px; left: 0; width: 0; border-radius: 999px;
+    background: var(--surface); box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12), 0 0 0 0.5px rgba(0, 0, 0, 0.04);
+    will-change: transform, width;
+  }
+  .seg button {
+    position: relative; z-index: 1; background: transparent; min-height: 2rem; padding: 0.375rem 0.75rem;
+    font-size: 0.8125rem; font-weight: 500; color: var(--muted); font-variant-numeric: tabular-nums;
+  }
+  .seg button[aria-checked="true"] { color: var(--text); font-weight: 600; }
+  @media (hover: hover) { .seg button:hover { background: transparent; color: var(--text); } }
+
+  #status {
+    display: inline-flex; align-items: center; gap: 0.4rem; margin-left: auto; padding-right: 0.375rem;
+    font-size: 0.8125rem; color: var(--muted); font-variant-numeric: tabular-nums;
+  }
+  #status::before { content: ""; width: 0.4rem; height: 0.4rem; border-radius: 50%; background: var(--accent); }
+  #status.warn { color: var(--warn); } #status.warn::before { background: var(--warn); }
+  #status:empty { display: none; }
+
+  /* ---------- Lanes ---------- */
+  .lanes { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; margin-top: 1rem; }
+  @media (max-width: 52rem) { .lanes { grid-template-columns: 1fr; } }
+  .lane .desc { margin: 0.375rem 0 1rem; min-height: 3em; }
+  .stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0.5rem; margin-bottom: 0.875rem; }
+  @media (max-width: 32rem) { .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  .stat { background: var(--fill); border-radius: 0.75rem; padding: 0.5rem 0.75rem; min-width: 0; transition: background-color 200ms ease; }
+  .stat .k { font-size: 0.6875rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .stat .v { font-size: 1.375rem; line-height: 1.25; font-weight: 600; letter-spacing: -0.012em; font-variant-numeric: tabular-nums; }
+  .v.ok { color: var(--ok); } .v.bad { color: var(--bad); }
+  .stat.over { background: var(--bad-tint); }
+  .meter { display: flex; gap: 3px; margin-bottom: 0.875rem; }
+  .meter i { flex: 1; height: 0.3125rem; border-radius: 3px; background: var(--fill); transition: background-color 150ms ease-out; }
+  .meter i.on { background: var(--ok); }
+  canvas { width: 100%; height: 6rem; display: block; border-radius: 0.75rem; background: var(--fill); }
+  .axis { display: flex; justify-content: space-between; margin-top: 0.3rem; font-size: 0.6875rem; letter-spacing: 0.02em; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+  .legend { display: flex; flex-wrap: wrap; gap: 0.5rem 1.25rem; margin-top: 1rem; }
+  .legend span::before { content: ""; display: inline-block; width: 0.625rem; height: 0.625rem; border-radius: 3px; margin-right: 0.4rem; vertical-align: -1px; background: var(--c); }
+  .legend .line::before { width: 0; height: 0.75rem; border-left: 2px dashed var(--muted); background: none; border-radius: 0; }
+
+  /* ---------- How it works ---------- */
+  section.how { margin-top: 3.5rem; display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); gap: 1rem; }
+  @media (max-width: 52rem) { section.how { grid-template-columns: 1fr; } }
+  .how ul { padding-left: 1.1rem; margin: 1rem 0 0; color: var(--muted); font-size: 0.9375rem; }
+  .how li { margin-bottom: 0.5rem; }
+  .how li b { color: var(--text); font-weight: 600; }
+  svg.arch { width: 100%; height: auto; display: block; }
+  svg.arch rect { fill: var(--fill); }
+  svg.arch rect.store { fill: color-mix(in srgb, var(--accent) 14%, transparent); }
+  svg.arch text { fill: var(--text); font: 500 13px system-ui, -apple-system, sans-serif; }
+  svg.arch text.sub { fill: var(--muted); font-size: 11px; font-weight: 400; }
+  svg.arch path { stroke: var(--muted); fill: none; stroke-width: 1.25; }
+  pre {
+    margin: 0.75rem 0 0; background: var(--fill); border-radius: 0.75rem;
+    padding: 0.875rem 1rem; overflow-x: auto; font-size: 0.78rem; line-height: 1.55;
+  }
+  footer { margin-top: 2.5rem; display: flex; gap: 1.25rem; flex-wrap: wrap; }
+
+  /* ---------- Accessibility preferences ---------- */
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before { transition-duration: 1ms !important; }
+    button:active { transform: none; }
+  }
+  @media (prefers-reduced-transparency: reduce) {
+    .toolbar { background: var(--surface); -webkit-backdrop-filter: none; backdrop-filter: none; }
+  }
+  @media (prefers-contrast: more) {
+    :root { --muted: var(--text); --fill: transparent; }
+    .card, .toolbar, .stat, .chip, button:not(.primary), .seg, canvas, pre { box-shadow: none; outline: 1px solid var(--text); outline-offset: -1px; }
+    .toolbar { background: var(--surface); -webkit-backdrop-filter: none; backdrop-filter: none; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <h1>Rate Limiter Lab</h1>
+  <p class="lede">Four rate-limiting algorithms behind one Redis, side by side. Every button sends the same traffic to all four, so you can watch where they agree and where they don't.</p>
+
+  <div class="chips" aria-live="polite">
+    <span class="chip"><span class="dot" id="health-dot"></span>Backend <b id="backend">…</b></span>
+    <span class="chip">Rule <b id="rule">…</b></span>
+    <span class="chip">Instances seen <b id="instances">0</b></span>
+    <span class="chip">Median latency <b id="latency">–</b></span>
+  </div>
+
+  <div class="sentinel" aria-hidden="true"></div>
+  <div class="toolbar" role="toolbar" aria-label="Traffic controls">
+    <div class="group">
+      <button class="primary" data-burst="1">Send 1</button>
+      <button data-burst="10">Burst ×10</button>
+      <button data-burst="30">Burst ×30</button>
+    </div>
+    <div class="group">
+      <span class="label" id="steady-label">Steady</span>
+      <div class="seg" id="stream" role="radiogroup" aria-labelledby="steady-label">
+        <span class="thumb" aria-hidden="true"></span>
+        <button role="radio" aria-checked="true" data-rps="0">Off</button>
+        <button role="radio" aria-checked="false" data-rps="1" tabindex="-1">1/s</button>
+        <button role="radio" aria-checked="false" data-rps="2" tabindex="-1">2/s</button>
+        <button role="radio" aria-checked="false" data-rps="5" tabindex="-1">5/s</button>
+      </div>
+    </div>
+    <div class="group">
+      <button id="boundary" aria-describedby="boundary-desc">Boundary attack</button>
+      <button id="reset" aria-describedby="reset-desc">Reset</button>
+      <span class="vh" id="boundary-desc">Sends a full burst just before a window boundary and another just after.</span>
+      <span class="vh" id="reset-desc">Starts fresh with a new client id and empty buckets.</span>
+    </div>
+    <span id="status" role="status"></span>
+  </div>
+
+  <div class="lanes" id="lanes"></div>
+
+  <div class="legend small">
+    <span style="--c: var(--ok)">Allowed (bar up)</span>
+    <span style="--c: var(--bad)">Rejected, 429 (bar down)</span>
+    <span class="line">Window boundary</span>
+    <span>“Peak” is the most requests allowed in any one window. Red means it went over the limit.</span>
+  </div>
+
+  <section class="how">
+    <div class="card">
+      <h2>How it works</h2>
+      <svg class="arch" viewBox="0 0 520 170" role="img" aria-label="Clients go through a load balancer to several stateless app instances, which all share one Redis running atomic Lua scripts">
+        <defs><marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" style="fill:var(--muted);stroke:none"/></marker></defs>
+        <rect x="4" y="62" width="88" height="46" rx="12"/><text x="48" y="89" text-anchor="middle">Clients</text>
+        <rect x="124" y="62" width="96" height="46" rx="12"/><text x="172" y="83" text-anchor="middle">Load</text><text x="172" y="99" text-anchor="middle">balancer</text>
+        <rect x="256" y="8" width="112" height="40" rx="12"/><text x="312" y="27" text-anchor="middle">FastAPI #1</text><text class="sub" x="312" y="41" text-anchor="middle">stateless</text>
+        <rect x="256" y="65" width="112" height="40" rx="12"/><text x="312" y="84" text-anchor="middle">FastAPI #2</text><text class="sub" x="312" y="98" text-anchor="middle">stateless</text>
+        <rect x="256" y="122" width="112" height="40" rx="12"/><text x="312" y="141" text-anchor="middle">FastAPI #N</text><text class="sub" x="312" y="155" text-anchor="middle">stateless</text>
+        <rect class="store" x="404" y="58" width="112" height="54" rx="12"/><text x="460" y="81" text-anchor="middle">Redis</text><text class="sub" x="460" y="97" text-anchor="middle">atomic Lua scripts</text>
+        <path d="M92 85H122" marker-end="url(#arr)"/>
+        <path d="M220 85C238 85 236 28 254 28" marker-end="url(#arr)"/>
+        <path d="M220 85H254" marker-end="url(#arr)"/>
+        <path d="M220 85C238 85 236 142 254 142" marker-end="url(#arr)"/>
+        <path d="M368 28C386 28 384 78 402 78" marker-end="url(#arr)"/>
+        <path d="M368 85H402" marker-end="url(#arr)"/>
+        <path d="M368 142C386 142 384 92 402 92" marker-end="url(#arr)"/>
+      </svg>
+      <ul>
+        <li><b>Shared state, stateless app.</b> All counters live in Redis, so you can add app instances and the limit stays global. That's what “Instances seen” is counting.</li>
+        <li><b>One atomic script per request.</b> Each check is a single Lua script, so concurrent requests can't race between reading a counter and writing it. It's also one network round trip.</li>
+        <li><b>Fails open.</b> If Redis goes down, traffic passes through (configurable) rather than taking the whole API down with it.</li>
+        <li><b>Standard headers.</b> <code>RateLimit-Limit</code>, <code>RateLimit-Remaining</code>, <code>RateLimit-Reset</code> and <code>Retry-After</code> on every response.</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h2>Use it as a service</h2>
+      <p class="small">Any backend can ask whether a key may proceed, with its own rule:</p>
+<pre>curl -X POST <span id="origin"></span>/v1/check \
+  -H 'Content-Type: application/json' \
+  -d '{"key":"user:42","algorithm":"token_bucket",
+       "limit":100,"window":60}'
+
+{"allowed":true,"limit":100,"remaining":99,
+ "reset_after":0.6,"retry_after":0.0}</pre>
+      <p class="small" style="margin-top:0.75rem">Full interactive reference at <a href="/docs">/docs</a>.</p>
+    </div>
+  </section>
+
+  <footer class="small">
+    <a href="https://github.com/YOUR_USERNAME/ratelimiter-lab">Source on GitHub</a>
+    <a href="/docs">API docs</a>
+    <span>Built with FastAPI, Redis and Lua.</span>
+  </footer>
+</main>
+
+<script>
+(() => {
+  const SPAN = 20;          // seconds of history shown in each timeline
+  const BAR_RESPONSE = 0.3; // spring response (s) for timeline bars growing in
+  const $ = (s) => document.querySelector(s);
+  const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)");
+
+  let clientId = newId();
+  let limit = 10, windowSec = 10, offset = 0; // offset = server clock - local clock (seconds)
+  const lanes = new Map();
+  const instances = new Set();
+  const latencies = [];
+
+  function newId() {
+    const a = new Uint8Array(8); crypto.getRandomValues(a);
+    return "tab-" + Array.from(a, (b) => b.toString(16).padStart(2, "0")).join("");
+  }
+  const serverNow = () => Date.now() / 1000 + offset;
+
+  function setStatus(text, warn = false) {
+    const el = $("#status"); el.textContent = text; el.classList.toggle("warn", warn);
+  }
+
+  // ---------- Springs ----------
+  // Parameterised the way Apple does it: damping ratio + response (seconds).
+  // State is position + velocity, so re-targeting mid-flight continues from the
+  // live value with velocity intact. Interruptible by construction.
+  class Spring {
+    constructor(value, { damping = 1, response = 0.3 } = {}) {
+      this.x = this.target = value; this.v = 0;
+      this.k = (2 * Math.PI / response) ** 2;
+      this.c = (4 * Math.PI * damping) / response;
+    }
+    step(dt) {
+      const n = Math.max(1, Math.ceil(dt * 240)), h = dt / n; // fixed substeps for stability
+      for (let i = 0; i < n; i++) {
+        this.v += (-this.k * (this.x - this.target) - this.c * this.v) * h;
+        this.x += this.v * h;
+      }
+      if (Math.abs(this.v) < 0.01 && Math.abs(this.x - this.target) < 0.01) { this.x = this.target; this.v = 0; }
+      return this.x;
+    }
+    get settled() { return this.v === 0 && this.x === this.target; }
+  }
+
+  // Closed-form critically damped step response, 0 → 1. Used for bars, which never re-target.
+  const omega = (2 * Math.PI) / BAR_RESPONSE;
+  const grow = (t) => (t <= 0 ? 0 : 1 - (1 + omega * t) * Math.exp(-omega * t));
+
+  // ---------- Segmented control ----------
+  const seg = $("#stream"), thumb = seg.querySelector(".thumb");
+  const segButtons = [...seg.querySelectorAll("button")];
+  const thumbX = new Spring(0), thumbW = new Spring(0); // independent springs per dimension
+  let thumbRaf = 0, thumbLast = 0;
+
+  function placeThumb(btn, animate) {
+    thumbX.target = btn.offsetLeft; thumbW.target = btn.offsetWidth;
+    if (!animate || reducedMotion.matches) {
+      thumbX.x = thumbX.target; thumbW.x = thumbW.target; thumbX.v = thumbW.v = 0;
+      renderThumb(); return;
+    }
+    if (!thumbRaf) { thumbLast = performance.now(); thumbRaf = requestAnimationFrame(tickThumb); }
+  }
+  function renderThumb() { thumb.style.transform = `translateX(${thumbX.x}px)`; thumb.style.width = `${thumbW.x}px`; }
+  function tickThumb(now) {
+    const dt = Math.min(0.05, (now - thumbLast) / 1000); thumbLast = now;
+    thumbX.step(dt); thumbW.step(dt); renderThumb();
+    thumbRaf = thumbX.settled && thumbW.settled ? 0 : requestAnimationFrame(tickThumb);
+  }
+
+  let streamTimer = null;
+  function selectRate(btn, { focus = false } = {}) {
+    for (const b of segButtons) {
+      const on = b === btn;
+      b.setAttribute("aria-checked", on); b.tabIndex = on ? 0 : -1;
+    }
+    if (focus) btn.focus();
+    placeThumb(btn, true);
+    clearInterval(streamTimer);
+    const rps = +btn.dataset.rps;
+    if (rps) streamTimer = setInterval(() => fire(1), 1000 / rps);
+  }
+  segButtons.forEach((b) => b.addEventListener("click", () => selectRate(b)));
+  seg.addEventListener("keydown", (e) => {
+    const i = segButtons.findIndex((b) => b.getAttribute("aria-checked") === "true");
+    const d = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[e.key];
+    if (!d) return;
+    e.preventDefault();
+    selectRate(segButtons[(i + d + segButtons.length) % segButtons.length], { focus: true });
+  });
+  addEventListener("resize", () => placeThumb(segButtons.find((b) => b.getAttribute("aria-checked") === "true"), false));
+
+  // ---------- Toolbar scroll-edge effect ----------
+  new IntersectionObserver(([e]) => $(".toolbar").classList.toggle("stuck", !e.isIntersecting), {
+    rootMargin: "-13px 0px 0px 0px",
+  }).observe($(".sentinel"));
+
+  // ---------- Data ----------
+  async function init() {
+    $("#origin").textContent = location.origin;
+    placeThumb(segButtons[0], false);
+    const t0 = Date.now();
+    const res = await fetch("/api/algorithms");
+    const info = await res.json();
+    const rtt = (Date.now() - t0) / 1000;
+    offset = info.server_time - (t0 / 1000 + rtt / 2);
+    limit = info.limit; windowSec = info.window;
+    $("#rule").textContent = `${limit} req / ${windowSec}s`;
+    $("#backend").textContent = info.backend;
+    noteInstance(res);
+
+    const root = $("#lanes");
+    for (const a of info.algorithms) {
+      const el = document.createElement("article");
+      el.className = "card lane";
+      el.innerHTML = `
+        <h3>${a.title}</h3>
+        <p class="desc small">${a.description.replace(/`([^`]+)`/g, "<code>$1</code>")}</p>
+        <div class="stats">
+          <div class="stat"><div class="k">Allowed</div><div class="v ok" data-k="ok">0</div></div>
+          <div class="stat"><div class="k">Rejected</div><div class="v bad" data-k="bad">0</div></div>
+          <div class="stat"><div class="k">Remaining</div><div class="v" data-k="rem">${limit}</div></div>
+          <div class="stat" data-k="peak-box"><div class="k">Peak / ${windowSec}s</div><div class="v" data-k="peak">0</div></div>
+        </div>
+        <div class="meter" aria-hidden="true">${"<i class='on'></i>".repeat(limit)}</div>
+        <canvas role="img" aria-label="Timeline of allowed and rejected requests for ${a.title}"></canvas>
+        <div class="axis"><span>−${SPAN}s</span><span>now</span></div>`;
+      root.appendChild(el);
+      lanes.set(a.name, {
+        el, canvas: el.querySelector("canvas"), events: [], allowedTimes: [],
+        ok: 0, bad: 0, peak: 0, remaining: limit,
+        showWindows: a.name === "fixed_window" || a.name === "sliding_window_counter",
+      });
+    }
+    pollHealth(); setInterval(pollHealth, 15000);
+    requestAnimationFrame(draw);
+  }
+
+  function noteInstance(res) {
+    const who = res.headers.get("X-Served-By");
+    if (who && !instances.has(who)) { instances.add(who); $("#instances").textContent = instances.size; }
+  }
+
+  async function pollHealth() {
+    try {
+      const r = await fetch("/health"); const h = await r.json();
+      $("#health-dot").className = "dot " + (h.status === "ok" ? "ok" : "bad");
+      noteInstance(r);
+    } catch { $("#health-dot").className = "dot bad"; }
+  }
+
+  async function hit(name) {
+    const lane = lanes.get(name);
+    const start = performance.now();
+    try {
+      const res = await fetch(`/api/demo/${name}`, { headers: { "X-Client-Id": clientId } });
+      const ms = performance.now() - start;
+      latencies.push(ms); if (latencies.length > 200) latencies.shift();
+      noteInstance(res);
+      const body = await res.json();
+      if (res.headers.get("X-RateLimit-Degraded")) setStatus("Redis is unreachable, so requests are being let through (fail-open)", true);
+      const allowed = res.status === 200;
+      const t = body.server_time ?? serverNow();
+      lane.events.push({ t, allowed, born: performance.now() });
+      if (allowed) {
+        lane.ok++;
+        lane.allowedTimes.push(t);
+        // Peak = allowed requests in the trailing window ending now, on the server's clock.
+        while (lane.allowedTimes.length && lane.allowedTimes[0] <= t - windowSec) lane.allowedTimes.shift();
+        lane.peak = Math.max(lane.peak, lane.allowedTimes.length);
+      } else lane.bad++;
+      if (typeof body.remaining === "number") lane.remaining = body.remaining;
+      render(lane);
+    } catch {
+      setStatus("Network error. Is the server running?", true);
+    }
+  }
+
+  function render(lane) {
+    const q = (k) => lane.el.querySelector(`[data-k="${k}"]`);
+    q("ok").textContent = lane.ok; q("bad").textContent = lane.bad; q("rem").textContent = lane.remaining;
+    const over = lane.peak > limit;
+    const peak = q("peak"); peak.textContent = lane.peak; peak.className = "v" + (over ? " bad" : "");
+    q("peak-box").classList.toggle("over", over);
+    lane.el.querySelectorAll(".meter i").forEach((i, idx) => i.classList.toggle("on", idx < lane.remaining));
+    const sorted = [...latencies].sort((a, b) => a - b);
+    if (sorted.length) $("#latency").textContent = `${Math.round(sorted[sorted.length >> 1])} ms`;
+  }
+
+  const fire = (n) => { for (let i = 0; i < n; i++) for (const name of lanes.keys()) hit(name); };
+
+  function draw(frameTime) {
+    const now = serverNow();
+    const ok = css("--ok"), bad = css("--bad"), grid = css("--grid"), muted = css("--muted");
+    const still = reducedMotion.matches;
+    for (const lane of lanes.values()) {
+      const c = lane.canvas, dpr = devicePixelRatio || 1;
+      const w = c.clientWidth, h = c.clientHeight;
+      if (c.width !== w * dpr || c.height !== h * dpr) { c.width = w * dpr; c.height = h * dpr; }
+      const g = c.getContext("2d");
+      g.setTransform(dpr, 0, 0, dpr, 0, 0);
+      g.clearRect(0, 0, w, h);
+      const x = (t) => w - ((now - t) / SPAN) * w;
+      const mid = h / 2;
+
+      g.strokeStyle = grid; g.lineWidth = 1;
+      for (let s = Math.ceil(now - SPAN); s <= now; s++) { g.beginPath(); g.moveTo(x(s), 0); g.lineTo(x(s), h); g.stroke(); }
+      g.beginPath(); g.moveTo(0, mid); g.lineTo(w, mid); g.stroke();
+
+      if (lane.showWindows) {
+        g.strokeStyle = muted; g.setLineDash([4, 4]);
+        for (let b = Math.ceil((now - SPAN) / windowSec) * windowSec; b <= now; b += windowSec) {
+          g.beginPath(); g.moveTo(x(b), 0); g.lineTo(x(b), h); g.stroke();
+        }
+        g.setLineDash([]);
+      }
+
+      lane.events = lane.events.filter((e) => now - e.t < SPAN);
+      const full = mid - 8;
+      for (const e of lane.events) {
+        const age = (frameTime - e.born) / 1000;
+        // Bars grow out of the baseline toward their outcome: up = allowed, down = rejected.
+        // With reduced motion they appear at full height and only fade in.
+        const len = still ? full : full * grow(age);
+        g.globalAlpha = still ? Math.min(1, age / 0.15) * 0.9 : 0.9;
+        g.fillStyle = e.allowed ? ok : bad;
+        const px = x(e.t);
+        if (e.allowed) g.fillRect(px - 1, mid - 2 - len, 2, len);
+        else g.fillRect(px - 1, mid + 2, 2, len);
+      }
+      g.globalAlpha = 1;
+    }
+    requestAnimationFrame(draw);
+  }
+
+  document.querySelectorAll("[data-burst]").forEach((b) => b.addEventListener("click", () => fire(+b.dataset.burst)));
+
+  $("#boundary").addEventListener("click", () => {
+    // Full burst shortly before a window boundary, another just after it.
+    // Fixed window lets both through: 2x the limit in under 2 seconds.
+    // The lead time covers browser connection queueing (~6 per host) and network
+    // latency, so the whole first burst reaches the server before the boundary.
+    const LEAD = 1.5, LAG = 0.2;
+    const btn = $("#boundary"); btn.disabled = true;
+    let boundary = Math.ceil(serverNow() / windowSec) * windowSec;
+    if (boundary - serverNow() < LEAD + 1) boundary += windowSec;
+    const at = (t, fn) => setTimeout(fn, Math.max(0, (t - serverNow()) * 1000));
+    const tick = setInterval(() => {
+      const left = boundary - LEAD - serverNow();
+      if (left > 0) setStatus(`First burst in ${left.toFixed(1)}s`);
+    }, 100);
+    at(boundary - LEAD, () => { clearInterval(tick); setStatus("Burst 1, before the boundary"); fire(limit); });
+    at(boundary + LAG, () => {
+      setStatus("Burst 2, after the boundary. Compare each lane's peak.");
+      fire(limit); btn.disabled = false;
+    });
+  });
+
+  $("#reset").addEventListener("click", () => {
+    clientId = newId();
+    for (const lane of lanes.values()) {
+      Object.assign(lane, { events: [], allowedTimes: [], ok: 0, bad: 0, peak: 0, remaining: limit });
+      render(lane);
+    }
+    setStatus("Fresh start: new client id, empty buckets");
+  });
+
+  init().catch(() => setStatus("Couldn't reach the API.", true));
+})();
+</script>
+</body>
+</html>

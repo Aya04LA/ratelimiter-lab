@@ -1,0 +1,24 @@
+# Render Blueprint: one free web service + one free Key Value (Redis-compatible) store.
+# Render dashboard -> New -> Blueprint -> pick this repo.
+services:
+  - type: web
+    name: ratelimiter-lab
+    runtime: docker
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: ratelimiter-redis
+          property: connectionString
+      - key: DEFAULT_LIMIT
+        value: "10"
+      - key: DEFAULT_WINDOW
+        value: "10"
+
+  - type: keyvalue
+    name: ratelimiter-redis
+    plan: free
+    maxmemoryPolicy: allkeys-lru
+    ipAllowList: [] # only reachable from inside Render's private network
